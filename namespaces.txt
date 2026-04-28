@@ -1,0 +1,13 @@
+[cluster_dev]
+payments-v1
+orders-v1
+auth-v1
+
+[cluster_hml]
+payments-v1
+orders-v1
+
+[cluster_prd]
+payments-v1
+orders-v1
+auth-v1
