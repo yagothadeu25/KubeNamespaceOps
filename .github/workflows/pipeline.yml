@@ -1,0 +1,143 @@
+name: KubeNamespaceOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NAMESPACES_FILE: namespaces.txt
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # JOB 1 — Valida todos os namespaces (DNS-1123 + duplicatas)
+  # ──────────────────────────────────────────────────────────────────────────
+  validate:
+    name: Validate Namespaces
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Run validation
+        run: scripts/validate-namespaces.sh ${{ env.NAMESPACES_FILE }}
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # JOB 2 — Gera os overlays e salva como artefato
+  # ──────────────────────────────────────────────────────────────────────────
+  generate:
+    name: Generate Overlays
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Make scripts executable
+        run: chmod +x scripts/*.sh
+
+      - name: Generate overlays
+        run: scripts/generate-overlays.sh ${{ env.NAMESPACES_FILE }}
+
+      - name: Show generated structure
+        run: find overlays -type f | sort
+
+      - name: Upload overlays artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlays
+          path: overlays/
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # JOB 3 — Push para repos separados por cluster (só no merge em main)
+  #
+  # Pré-requisito: crie os repos abaixo e adicione um secret GH_PAT com
+  # um Personal Access Token com permissão "repo" na sua organização/usuário:
+  #
+  #   <owner>/cluster-dev-namespaces
+  #   <owner>/cluster-hml-namespaces
+  #   <owner>/cluster-prd-namespaces
+  # ──────────────────────────────────────────────────────────────────────────
+  push-clusters:
+    name: Push overlays → ${{ matrix.cluster }} repo
+    runs-on: ubuntu-latest
+    needs: generate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cluster: cluster_dev
+            repo: cluster-dev-namespaces
+          - cluster: cluster_hml
+            repo: cluster-hml-namespaces
+          - cluster: cluster_prd
+            repo: cluster-prd-namespaces
+
+    steps:
+      - name: Download overlays artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: overlays
+          path: overlays/
+
+      - name: Check if cluster folder exists
+        id: check
+        run: |
+          if [ -d "overlays/${{ matrix.cluster }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️  Nenhum overlay encontrado para ${{ matrix.cluster }} — pulando."
+          fi
+
+      - name: Clone target repo
+        if: steps.check.outputs.exists == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git clone \
+            https://x-access-token:${GH_PAT}@github.com/${{ github.repository_owner }}/${{ matrix.repo }}.git \
+            /tmp/target-repo
+
+      - name: Sync overlays into target repo
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          # Limpa namespaces antigos e copia os novos
+          rm -rf /tmp/target-repo/namespaces
+          mkdir -p /tmp/target-repo/namespaces
+          cp -r overlays/${{ matrix.cluster }}/. /tmp/target-repo/namespaces/
+
+      - name: Commit and push
+        if: steps.check.outputs.exists == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          cd /tmp/target-repo
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add .
+
+          if git diff --cached --quiet; then
+            echo "✅ Nenhuma alteração em ${{ matrix.cluster }} — nada a commitar."
+            exit 0
+          fi
+
+          COMMIT_SHA="${{ github.sha }}"
+          git commit -m "chore: sync namespaces from KubeNamespaceOps@${COMMIT_SHA:0:7}
+
+          Triggered by: ${{ github.actor }}
+          Source commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+
+          git push
+          echo "🚀 Overlays de ${{ matrix.cluster }} enviados para ${{ matrix.repo }}."
