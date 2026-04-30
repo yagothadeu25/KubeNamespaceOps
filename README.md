@@ -1,5 +1,7 @@
 # KubeNamespaceOps
 
+[![KubeNamespaceOps Pipeline](https://github.com/yagothadeu25/KubeNamespaceOps/actions/workflows/pipeline.yml/badge.svg)](https://github.com/yagothadeu25/KubeNamespaceOps/actions/workflows/pipeline.yml)
+
 > Governança de namespaces Kubernetes orientada a GitOps para ambientes multi-cluster, com validação, padronização e provisionamento automatizado.
 
 ---
@@ -88,16 +90,16 @@ Regras de validação aplicadas:
 O arquivo `.github/workflows/pipeline.yml` define 3 jobs em sequência:
 
 ```
-validate  →  generate  →  push-clusters (matrix: dev | hml | prd)
+validate  →  generate & kustomize build  →  push-clusters (matrix: dev | hml | prd)
 ```
 
 | Job | Gatilho | O que faz |
 |---|---|---|
-| `validate` | PR + push em `main` | Executa `validate-namespaces.sh` |
-| `generate` | PR + push em `main` | Executa `generate-overlays.sh`, salva artefato |
+| `validate` | PR + push em `main` | Executa `validate-namespaces.sh` (DNS-1123, duplicatas) |
+| `generate` | PR + push em `main` | Gera overlays + executa `kustomize build` em cada um |
 | `push-clusters` | Apenas push em `main` | Envia overlays para os repos de cluster via matrix |
 
-Em **Pull Requests**, apenas `validate` e `generate` rodam (dry-run). O push para os clusters só acontece no merge em `main`.
+Em **Pull Requests**, apenas `validate` e `generate` rodam (dry-run completo com build real). O push para os clusters só acontece no merge em `main`.
 
 ---
 
@@ -113,18 +115,7 @@ Crie os 3 repositórios no GitHub (públicos ou privados):
 <seu-usuario>/cluster-prd-namespaces
 ```
 
-### 2. Secret GH_PAT
-
-Gere um **Personal Access Token clássico** com escopo `repo` em:
-**GitHub → Settings → Developer Settings → Personal access tokens → Tokens (classic)**
-
-Adicione como secret no repositório **KubeNamespaceOps**:
-**Settings → Secrets and variables → Actions → New repository secret**
-
-- **Name:** `GH_PAT`
-- **Value:** o token gerado
-
-### 3. Execução local
+### 2. Execução local
 
 ```bash
 # Validar namespaces
